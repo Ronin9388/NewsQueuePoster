@@ -9,6 +9,8 @@ import android.text.InputType
 import android.view.View
 import android.widget.*
 import androidx.work.*
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.DateFormat
 import java.util.Date
 import java.util.concurrent.TimeUnit
@@ -17,7 +19,7 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
     private lateinit var list: LinearLayout
     private fun px(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    private fun toast(m: String) = runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() }
+    private fun toast(m: String): Unit = runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b); Store.init(this)
@@ -40,9 +42,9 @@ class MainActivity : Activity() {
             }
         }
         btn("Approve all") {
-            val q = Store.queue()
+            val q: JSONArray = Store.queue()
             for (k in 0 until q.length()) {
-                val item = q.getJSONObject(k)
+                val item: JSONObject = q.getJSONObject(k)
                 if (item.optString("status") == "draft") item.put("status", "ready")
             }
             Store.saveQueue(q)
@@ -63,44 +65,59 @@ class MainActivity : Activity() {
     // Share a link from the browser to this app to queue it
     private fun handle(i: Intent) {
         if (i.action == Intent.ACTION_SEND) {
-            val t = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
-            val urls = Regex("https?://\\S+").findAll(t).map { it.value }.toList()
-            toast("Adding…"); thread { val n = urls.sumOf { Engine.ingest(it) }; toast("Added $n"); refresh() }
+            val t: String = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+            val urls: List<String> = Regex("https?://\\S+").findAll(t).map { it.value }.toList()
+            toast("Adding…"); thread { val n: Int = urls.sumOf { Engine.ingest(it) }; toast("Added $n"); refresh() }
         }
     }
 
     private fun addDialog() {
         val e = EditText(this).apply { hint = "One article URL per line"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 4 }
         AlertDialog.Builder(this).setTitle("Add articles").setView(e).setPositiveButton("Add") { _, _ ->
-            val urls = e.text.toString().lines().map { it.trim() }.filter { it.startsWith("http") }
-            toast("Adding…"); thread { val n = urls.sumOf { Engine.ingest(it) }; toast("Added $n"); refresh() }
+            val urls: List<String> = e.text.toString().lines().map { it.trim() }.filter { it.startsWith("http") }
+            toast("Adding…"); thread { val n: Int = urls.sumOf { Engine.ingest(it) }; toast("Added $n"); refresh() }
         }.show()
     }
 
-    private fun refresh() = runOnUiThread {
-        list.removeAllViews(); val q = Store.queue(); val df = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-        if (q.length() == 0) list.addView(TextView(this).apply { text = "Queue is empty. Tap Add, set Sources in Settings and tap Pull, or share a link to this app." ; setPadding(px(8), px(24), px(8), 0) })
+    private fun refresh(): Unit = runOnUiThread {
+        list.removeAllViews()
+        val q: JSONArray = Store.queue()
+        val df: DateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+        if (q.length() == 0) {
+            list.addView(TextView(this).apply {
+                text = "Queue is empty. Tap Add, set Sources in Settings and tap Pull, or share a link to this app."
+                setPadding(px(8), px(24), px(8), 0)
+            })
+        }
         for (k in 0 until q.length()) {
-            val x = q.getJSONObject(k); val id = x.optString("id"); val st = x.optString("status")
+            val x: JSONObject = q.getJSONObject(k)
+            val id: String = x.optString("id")
+            val st: String = x.optString("status")
+            val postText: String = x.optString("text")
+            val errText: String = x.optString("err")
+            val ts: Long = x.optLong("time")
+            val isLong: Boolean = x.optBoolean("long")
+            val wLen: Int = Lib.wlen(postText)
+            val maxLen: Int = Lib.limit(isLong)
             val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(px(8), px(10), px(8), px(10)); setBackgroundColor(0x11000000) }
-            val time = if (x.optLong("time") > 0) df.format(Date(x.optLong("time"))) else "unscheduled"
-            card.addView(TextView(this).apply { text = "${st.uppercase()} · $time · ${Lib.wlen(x.optString("text"))}/${Lib.limit(x.optBoolean("long"))}"; textSize = 12f })
-            if (x.optString("err").isNotEmpty() && st == "failed") card.addView(TextView(this).apply { text = x.optString("err"); setTextColor(0xFFB00020.toInt()); textSize = 12f })
-            card.addView(TextView(this).apply { text = x.optString("text"); textSize = 15f; setPadding(0, px(4), 0, px(4)) })
+            val time: String = if (ts > 0L) df.format(Date(ts)) else "unscheduled"
+            card.addView(TextView(this).apply { text = "${st.uppercase()} · $time · $wLen/$maxLen"; textSize = 12f })
+            if (errText.isNotEmpty() && st == "failed") card.addView(TextView(this).apply { text = errText; setTextColor(0xFFB00020.toInt()); textSize = 12f })
+            card.addView(TextView(this).apply { text = postText; textSize = 15f; setPadding(0, px(4), 0, px(4)) })
             val row = LinearLayout(this)
             fun b(t: String, f: () -> Unit): Button = Button(this).apply { text = t; textSize = 12f; setOnClickListener { f() } }.also { row.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
             if (st == "draft") b("Approve") { Store.update(id) { it.put("status", "ready") }; thread { Engine.schedule(); refresh() } }
             if (st == "failed") b("Retry") { Store.update(id) { it.put("status", "ready").put("time", 0L).remove("err") }; thread { Engine.schedule(); refresh() } }
-            b("Edit") { editDialog(id, x.optString("text")) }
+            b("Edit") { editDialog(id, postText) }
             if (st != "draft") b("Post") { postNow(x) }
             b("Del") { Engine.markPosted(id); refresh() }
             card.addView(row); list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(8) })
         }
     }
 
-    private fun postNow(x: org.json.JSONObject) {
+    private fun postNow(x: JSONObject) {
         if (Store.s("postMode", "share") == "api") thread {
-            val r = Engine.postApi(x)
+            val r: String = Engine.postApi(x)
             if (r == "ok") { Engine.markPosted(x.optString("id")); toast("Posted") } else { Store.update(x.optString("id")) { it.put("status", "failed").put("err", r) }; toast(r) }
             refresh()
         } else {
