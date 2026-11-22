@@ -16,7 +16,7 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
     private lateinit var list: LinearLayout
-    private fun px(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun px(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun toast(m: String) = runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() }
 
     override fun onCreate(b: Bundle?) {
@@ -26,9 +26,31 @@ class MainActivity : Activity() {
             PeriodicWorkRequestBuilder<Tick>(15, TimeUnit.MINUTES).setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build())
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(px(10), px(34), px(10), px(6)) }
         val bar = LinearLayout(this)
-        fun btn(t: String, f: () -> Unit) = Button(this).apply { text = t; setOnClickListener { f() } }.also { bar.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
-        btn("Add") { addDialog() }; btn("Pull") { toast("Pulling…"); thread { val n = Engine.pull(); toast("Pulled $n"); refresh() } }
-        btn("Approve all") { Store.queue().let { q -> for (k in 0 until q.length()) q.getJSONObject(k).let { if (it.optString("status") == "draft") it.put("status", "ready") }; Store.saveQueue(q) }; thread { Engine.schedule(); refresh() } }
+        fun btn(t: String, f: () -> Unit): Button = Button(this).apply {
+            text = t
+            setOnClickListener { f() }
+        }.also { bar.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
+        btn("Add") { addDialog() }
+        btn("Pull") {
+            toast("Pulling…")
+            thread {
+                val n: Int = Engine.pull()
+                toast("Pulled $n")
+                refresh()
+            }
+        }
+        btn("Approve all") {
+            val q = Store.queue()
+            for (k in 0 until q.length()) {
+                val item = q.getJSONObject(k)
+                if (item.optString("status") == "draft") item.put("status", "ready")
+            }
+            Store.saveQueue(q)
+            thread {
+                Engine.schedule()
+                refresh()
+            }
+        }
         btn("Settings") { settings() }
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(bar); root.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -66,12 +88,12 @@ class MainActivity : Activity() {
             if (x.optString("err").isNotEmpty() && st == "failed") card.addView(TextView(this).apply { text = x.optString("err"); setTextColor(0xFFB00020.toInt()); textSize = 12f })
             card.addView(TextView(this).apply { text = x.optString("text"); textSize = 15f; setPadding(0, px(4), 0, px(4)) })
             val row = LinearLayout(this)
-            fun b(t: String, f: () -> Unit) = Button(this).apply { text = t; textSize = 12f; setOnClickListener { f() } }.also { row.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
+            fun b(t: String, f: () -> Unit): Button = Button(this).apply { text = t; textSize = 12f; setOnClickListener { f() } }.also { row.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
             if (st == "draft") b("Approve") { Store.update(id) { it.put("status", "ready") }; thread { Engine.schedule(); refresh() } }
             if (st == "failed") b("Retry") { Store.update(id) { it.put("status", "ready").put("time", 0L).remove("err") }; thread { Engine.schedule(); refresh() } }
             b("Edit") { editDialog(id, x.optString("text")) }
             if (st != "draft") b("Post") { postNow(x) }
-            b("Del") { Engine.markPosted(id).also { }; refresh() }
+            b("Del") { Engine.markPosted(id); refresh() }
             card.addView(row); list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(8) })
         }
     }
